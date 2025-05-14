@@ -22,25 +22,38 @@ func NewScanner(categories map[types.LicenseCategory][]string) Scanner {
 }
 
 func (s *Scanner) Scan(licenseName string) (types.LicenseCategory, string) {
-	normalized := Normalize(licenseName)
+	category := types.CategoryUnknown
+	compoundFound := false
 
-	switch normalized := normalized.(type) {
-	case expression.SimpleExpr:
-		return s.licenseToCategoryAndSeverity(normalized)
-	case expression.CompoundExpr:
-		return s.compoundLicenseToCategoryAndSeverity(normalized)
+	detectCategoryAndSeverity := func(expr expression.Expression) expression.Expression {
+		switch e := expr.(type) {
+		case expression.SimpleExpr:
+			if !compoundFound {
+				category = s.licenseToCategory(e)
+			}
+		case expression.CompoundExpr:
+			category = s.compoundLicenseToCategory(e)
+			compoundFound = true
+		}
+
+		return expr
 	}
 
-	return types.CategoryUnknown, dbTypes.SeverityUnknown.String()
+	_, err := expression.Normalize(licenseName, NormalizeLicense, detectCategoryAndSeverity)
+	if err != nil {
+		return types.CategoryUnknown, dbTypes.SeverityUnknown.String()
+	}
+
+	return category, categoryToSeverity(category).String()
 }
 
-func (s *Scanner) licenseToCategoryAndSeverity(license expression.SimpleExpr) (types.LicenseCategory, string) {
+func (s *Scanner) licenseToCategory(license expression.SimpleExpr) types.LicenseCategory {
 	for category, names := range s.categories {
 		if slices.Contains(names, license.License) {
-			return category, categoryToSeverity(category).String()
+			return category
 		}
 	}
-	return types.CategoryUnknown, dbTypes.SeverityUnknown.String()
+	return types.CategoryUnknown
 }
 
 func categoryToSeverity(category types.LicenseCategory) dbTypes.Severity {
@@ -57,23 +70,23 @@ func categoryToSeverity(category types.LicenseCategory) dbTypes.Severity {
 	return dbTypes.SeverityUnknown
 }
 
-func (s *Scanner) compoundLicenseToCategoryAndSeverity(license expression.CompoundExpr) (types.LicenseCategory, string) {
+func (s *Scanner) compoundLicenseToCategory(license expression.CompoundExpr) types.LicenseCategory {
 	switch license.Conjunction() {
 	case expression.TokenAnd:
 		return s.compoundLogicOperator(license, true)
 	case expression.TokenOR:
 		return s.compoundLogicOperator(license, false)
 	default:
-		return types.CategoryUnknown, dbTypes.SeverityUnknown.String()
+		return types.CategoryUnknown
 	}
 }
 
-func (s *Scanner) compoundLogicOperator(license expression.CompoundExpr, findMax bool) (types.LicenseCategory, string) {
+func (s *Scanner) compoundLogicOperator(license expression.CompoundExpr, findMax bool) types.LicenseCategory {
 	lCategory, lSeverity := s.Scan(license.Left().String())
 	rCategory, rSeverity := s.Scan(license.Right().String())
 
 	if lSeverity == dbTypes.SeverityUnknown.String() || rSeverity == dbTypes.SeverityUnknown.String() {
-		return types.CategoryUnknown, dbTypes.SeverityUnknown.String()
+		return types.CategoryUnknown
 	}
 
 	var logicOperator int
@@ -90,5 +103,5 @@ func (s *Scanner) compoundLogicOperator(license expression.CompoundExpr, findMax
 		compoundCategory = lCategory
 	}
 
-	return compoundCategory, categoryToSeverity(compoundCategory).String()
+	return compoundCategory
 }
